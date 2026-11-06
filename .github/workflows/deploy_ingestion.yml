@@ -7,6 +7,7 @@ on:
     paths:
       - 'data_ingestion/**'
       - '.github/workflows/deploy_ingestion.yml'
+      - 'uv.lock'
   pull_request:
     branches:
       - main
@@ -17,33 +18,29 @@ env:
   PROJECT_ID: ${{ vars.PROJECT_ID }}
   REGION: ${{vars.REGION}}
   SERVICE_ACCOUNT: ${{vars.SERVICE_ACCOUNT}}
-  ART_REPO: ${{vars.ARTREPO}}
+  ART_REPO: ${{vars.ART_REPO}}
   WORKLOAD_IDENTITY_PROVIDER: ${{vars.WORKLOAD_IDENTITY_PROVIDER}}
 
 jobs:
   test-and-lint:
     runs-on: ubuntu-latest
     steps:
-      - name: 'Checkout'
+      - name: Checkout
         uses: actions/checkout@v4
   
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
-  
+          enable-cache: true
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r ./data_ingestion/requirements.txt
-          pip install pytest ruff
-  
-      - name: Run Linter (Ruff)
-        run: ruff check ./data_ingestion
-  
-      - name: Run Tests (Pytest)
-        run: pytest ./data_ingestion/tests
+        run: uv sync --frozen
+      
+      - name: Run linter (Ruff)
+        run: uv run --directory ./data_ingestion ruff check .
+
+      - name: Run tests (Pytest)
+        run: uv run --directory ./data_ingestion pytest tests
   
   build-and-deploy:
     needs: test-and-lint
@@ -71,7 +68,7 @@ jobs:
 
       - name: Build and Push Ingestion Docker Image
         run: |
-          IMAGE_BASE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTREPO }}/ingestion"
+          IMAGE_BASE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ART_REPO }}/ingestion"
           SHA_TAG="$IMAGE_BASE:${{ github.sha }}"
           LATEST_TAG="$IMAGE_BASE:latest"
 
