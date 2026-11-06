@@ -1,0 +1,92 @@
+name: 'Deploy GCP Ingestion Job'
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'data_ingestion/**'
+      - '.github/workflows/deploy_ingestion.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'data_ingestion/**'
+
+env:
+  PROJECT_ID: ${{ vars.PROJECT_ID }}
+  REGION: ${{vars.REGION}}
+  SERVICE_ACCOUNT: ${{vars.SERVICE_ACCOUNT}}
+  ART_REPO: ${{vars.ARTREPO}}
+  WORKLOAD_IDENTITY_PROVIDER: ${{vars.WORKLOAD_IDENTITY_PROVIDER}}
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v4
+  
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+  
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ./data_ingestion/requirements.txt
+          pip install pytest ruff
+  
+      - name: Run Linter (Ruff)
+        run: ruff check ./data_ingestion
+  
+      - name: Run Tests (Pytest)
+        run: pytest ./data_ingestion/tests
+  
+  build-and-deploy:
+    needs: test-and-lint
+    # Only build and deploy when merging/pushing to main    
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: 'read'
+      id-token: 'write' # Required for Google Cloud Workload Identity Federation
+
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v4
+
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker '${{ env.REGION }}-docker.pkg.dev'
+
+      - name: Build and Push Ingestion Docker Image
+        run: |
+          IMAGE_BASE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTREPO }}/ingestion"
+          SHA_TAG="$IMAGE_BASE:${{ github.sha }}"
+          LATEST_TAG="$IMAGE_BASE:latest"
+
+          # Build and tag with both SHA and latest
+          docker build -f ./data_ingestion/Dockerfile -t $SHA_TAG -t $LATEST_TAG ./data_ingestion
+          
+          # Push both tags
+          docker push $SHA_TAG
+          docker push $LATEST_TAG
+
+          # Save the SHA tag to environment variable for the deployment step
+          echo "IMAGE_TAG=$SHA_TAG" >> $GITHUB_ENV
+
+      - name: Update Ingestion Job
+        run: |
+          gcloud run jobs update ingestion-job \
+            --image="${{ env.IMAGE_TAG }}" \
+            --region=${{ env.REGION }}
